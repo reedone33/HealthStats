@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<!--
+  ===========================================================================
+  HEALTH STATS  —  a personal dashboard for Apple Health data
+  ===========================================================================
+
+  This is the whole app: layout, styling and behaviour in one file. The data
+  itself is NOT in here — it lives in health.json next door, which is built
+  from the big CSV export by build.py.
+
+  Keeping the data separate is what makes updating easy: replace the CSV,
+  double-click update.command, and this file never has to change.
+
+  The sections below, in order:
+     1. Styling            — colours, layout, how it adapts to a phone screen
+     2. Page structure     — the passcode screen, header, tabs and chart cards
+     3. Data loading       — fetching health.json and preparing it
+     4. Chart definitions  — a plain list describing every chart on every tab
+     5. Chart drawing      — generic code that turns those definitions into charts
+     6. Controls           — tabs, the date slider, the passcode gate
+  ===========================================================================
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- viewport-fit=cover lets the app draw behind the iPhone's rounded corners
+     and home indicator, so it looks native rather than letterboxed. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="theme-color" content="#0b0e14">
+<!-- Tells iOS to run this without Safari's address bar when opened from the
+     home screen. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Health">
+<title>Health Stats</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+/* ===========================================================================
+   1. STYLING
+   ===========================================================================
+   The colours are defined once here as "variables" so the whole app can be
+   re-themed by changing these few lines. Each metric family has its own hue,
+   used consistently on every chart so you learn the colours once.
+   ------------------------------------------------------------------------ */
+:root{
+  --bg:#0b0e14;          /* page background */
+  --surf:#131720;        /* header and bars */
+  --card:#181e2c;        /* chart cards */
+  --bdr:#252d3e;         /* borders and gridlines */
+  --text:#e8eaf0;
+  --muted:#6b7a96;       /* labels and secondary text */
+
+  --rem:#7c9ef8;         /* sleep: REM */
+  --core:#5ecfb1;        /* sleep: core */
+  --deep:#e88c5a;        /* sleep: deep */
+  --total:#c8a9fa;       /* sleep: totals */
+  --awake:#8492ad;
+
+  --sys:#f2748c;         /* blood pressure: systolic */
+  --dia:#7c9ef8;         /* blood pressure: diastolic */
+
+  --hr:#f2748c;          /* heart rate */
+  --rhr:#5ecfb1;         /* resting heart rate */
+  --whr:#f0b45e;         /* walking heart rate */
+
+  --walk:#6fc3e8;        /* walking metrics */
+  --vital:#a9d96f;       /* vitals */
+
+  --ok:#5ecfb1; --warn:#f0b45e; --bad:#f2748c;
+  --safe-t:env(safe-area-inset-top);
+  --safe-b:env(safe-area-inset-bottom);
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+body{
+  background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  padding-top:var(--safe-t);padding-bottom:var(--safe-b);
+  /* Stops the whole page bouncing when you scroll past the end on iOS. */
+  overscroll-behavior-y:none;
+}
+
+/* --- Passcode screen ----------------------------------------------------- */
+/* Sits over everything until the right code is entered. Worth being clear
+   with yourself about what this is: it hides the dashboard from someone who
+   picks up your phone. It is NOT encryption — the data file is still on a
+   public web address. Treat it as a curtain, not a lock. */
+#gate{
+  position:fixed;inset:0;z-index:999;background:var(--bg);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;
+}
+#gate.hidden{display:none;}
+#gate h1{font-size:19px;font-weight:600;letter-spacing:.02em;}
+#gate p{color:var(--muted);font-size:13px;text-align:center;max-width:280px;line-height:1.5;}
+#pin{
+  width:230px;padding:14px;text-align:center;font-size:20px;letter-spacing:.22em;
+  background:var(--card);border:1px solid var(--bdr);border-radius:12px;color:var(--text);
+  /* See the input's inputmode attribute further down for which keyboard
+     iOS brings up. */
+}
+#pin:focus{outline:none;border-color:var(--rem);}
+#gate button{
+  padding:13px 30px;border-radius:12px;border:none;background:var(--rem);
+  color:#0b0e14;font-size:15px;font-weight:600;cursor:pointer;
+}
+#gate .err{color:var(--bad);font-size:13px;min-height:18px;text-align:center;}
+#gate button:disabled{opacity:.55;}
+.remember{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);cursor:pointer;}
+.remember input{width:17px;height:17px;accent-color:var(--rem);}
+
+/* --- Header -------------------------------------------------------------- */
+header{
+  position:sticky;top:var(--safe-t);z-index:40;background:var(--surf);
+  border-bottom:1px solid var(--bdr);padding:10px 16px 0;
+}
+.htop{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:9px;}
+.logo{font-size:15px;font-weight:700;letter-spacing:.01em;}
+.logo em{color:var(--rem);font-style:normal;}
+.hmeta{font-size:10px;color:var(--muted);text-align:right;line-height:1.35;}
+
+/* The tab strip. On a narrow phone it scrolls sideways rather than wrapping
+   onto two lines, which keeps the header a predictable height. */
+.tabs{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;padding-bottom:0;}
+.tabs::-webkit-scrollbar{display:none;}
+.tab{
+  flex:0 0 auto;padding:9px 15px;font-size:13px;font-weight:500;color:var(--muted);
+  background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap;
+}
+.tab.on{color:var(--text);border-bottom-color:var(--rem);}
+
+/* --- Date range slider --------------------------------------------------- */
+/* Two sliders stacked on top of each other, one for each end of the range.
+   This is the standard trick for a two-handled range control, which HTML
+   doesn't provide on its own. */
+.rangebar{
+  position:sticky;top:calc(var(--safe-t) + 84px);z-index:35;
+  background:var(--surf);border-bottom:1px solid var(--bdr);padding:9px 16px 11px;
+}
+.rrow{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;}
+.rlabel{font-size:11px;color:var(--muted);}
+.rlabel b{color:var(--text);font-weight:600;}
+.quick{display:flex;gap:5px;}
+.qbtn{
+  font-size:10px;padding:4px 9px;border:1px solid var(--bdr);background:none;
+  color:var(--muted);border-radius:6px;cursor:pointer;
+}
+.qbtn.on{border-color:var(--rem);color:var(--rem);background:rgba(124,158,248,.1);}
+.slider-wrap{position:relative;height:26px;display:flex;align-items:center;}
+.s-track{position:absolute;left:0;right:0;height:3px;background:var(--bdr);border-radius:2px;}
+.s-fill{position:absolute;height:3px;background:var(--rem);border-radius:2px;}
+input[type=range]{
+  position:absolute;width:100%;height:26px;background:none;-webkit-appearance:none;
+  pointer-events:none; /* the track ignores taps; only the handles respond */
+}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;pointer-events:auto;
+  width:22px;height:22px;border-radius:50%;background:var(--rem);
+  border:3px solid var(--bg);box-shadow:0 1px 4px rgba(0,0,0,.5);cursor:grab;
+}
+#re::-webkit-slider-thumb{background:#a8bffa;}
+
+/* --- Chart cards --------------------------------------------------------- */
+main{padding:14px 12px 40px;display:flex;flex-direction:column;gap:12px;}
+.pane{display:none;flex-direction:column;gap:12px;}
+.pane.on{display:flex;}
+.card{background:var(--card);border:1px solid var(--bdr);border-radius:14px;overflow:hidden;}
+.chead{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:13px 15px 10px;cursor:pointer;}
+.ctitle{font-size:13px;font-weight:600;}
+.csub{font-size:10.5px;color:var(--muted);margin-top:2px;line-height:1.35;}
+.ctog{
+  flex:0 0 auto;width:26px;height:26px;border:1px solid var(--bdr);border-radius:8px;
+  background:none;color:var(--muted);font-size:15px;line-height:1;cursor:pointer;
+}
+.cbody{padding:0 10px 14px;}
+.cbody.shut{display:none;}
+.chart-box{position:relative;height:230px;}
+.legend{display:flex;flex-wrap:wrap;gap:11px;padding:0 5px 9px;}
+.lg{display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--muted);}
+.lg i{width:9px;height:9px;border-radius:3px;flex:0 0 auto;}
+.empty{padding:30px 16px;text-align:center;color:var(--muted);font-size:12px;line-height:1.5;}
+
+/* --- KPI cards (blood pressure tab) -------------------------------------- */
+.kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;}
+.kpi{background:var(--card);border:1px solid var(--bdr);border-radius:14px;padding:13px 14px;}
+.kpi .k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;}
+.kpi .v{font-size:23px;font-weight:700;margin-top:4px;line-height:1.1;}
+.kpi .s{font-size:10.5px;color:var(--muted);margin-top:3px;}
+.kpi .v.ok{color:var(--ok);} .kpi .v.warn{color:var(--warn);} .kpi .v.bad{color:var(--bad);}
+
+/* --- Data table ---------------------------------------------------------- */
+.tblwrap{max-height:340px;overflow:auto;border-radius:9px;}
+table{width:100%;border-collapse:collapse;font-size:11.5px;
+  font-variant-numeric:tabular-nums; /* digits line up in columns */}
+th{
+  position:sticky;top:0;background:var(--surf);color:var(--muted);font-weight:500;
+  padding:8px 10px;text-align:right;border-bottom:1px solid var(--bdr);white-space:nowrap;
+}
+th:first-child{text-align:left;}
+td{padding:7px 10px;text-align:right;border-bottom:1px solid rgba(37,45,62,.45);}
+td:first-child{text-align:left;color:var(--muted);}
+.pill{display:inline-block;padding:1px 7px;border-radius:20px;font-size:10px;font-weight:600;}
+
+/* On a wider screen (iPad, Mac) spread the cards into two columns and give
+   the charts more height, rather than leaving a long thin column. */
+@media (min-width:760px){
+  .pane{display:none;}
+  .pane.on{display:grid;grid-template-columns:1fr 1fr;align-items:start;}
+  .kpis{grid-template-columns:repeat(4,1fr);}
+  .wide{grid-column:1/-1;}
+  .chart-box{height:270px;}
+  main{padding:16px 20px 50px;}
+}
+</style>
+</head>
+<body>
+
+<!-- =========================================================================
+     2. PAGE STRUCTURE
+     ====================================================================== -->
+
+<!-- The passcode screen. Everything behind it is already loaded, so this only
+     hides the display, it doesn't protect the data. -->
+<div id="gate">
+  <h1>Health Stats</h1>
+  <p>Enter your passcode to open the dashboard.</p>
+  <!-- inputmode="text" brings up the full keyboard on a phone, so the passcode
+       can be letters, numbers or both. Setting it to "numeric" instead would
+       show only the number pad. -->
+  <input id="pin" type="password" inputmode="text" autocapitalize="none"
+         autocorrect="off" spellcheck="false" autocomplete="off" placeholder="passcode">
+  <div class="err" id="pinerr"></div>
+  <label class="remember">
+    <input type="checkbox" id="remember" checked>
+    Remember on this device
+  </label>
+  <button id="pinbtn">Open</button>
+</div>
+
+<header>
+  <div class="htop">
+    <div class="logo">◉ Health<em>Stats</em></div>
+    <div class="hmeta"><span id="mDays">—</span> days<br><span id="mGen">—</span></div>
+  </div>
+  <div class="tabs" id="tabs">
+    <button class="tab on" data-p="sleep">Sleep</button>
+    <button class="tab" data-p="bp">Blood Pressure</button>
+    <button class="tab" data-p="hr">Heart Rate</button>
+    <button class="tab" data-p="walk">Walking</button>
+    <button class="tab" data-p="vitals">Vitals</button>
+  </div>
+</header>
+
+<div class="rangebar">
+  <div class="rrow">
+    <div class="rlabel"><b id="lblS">—</b> → <b id="lblE">—</b></div>
+    <div class="quick">
+      <button class="qbtn" data-d="30">30d</button>
+      <button class="qbtn" data-d="90">90d</button>
+      <button class="qbtn" data-d="365">1y</button>
+      <button class="qbtn on" data-d="0">All</button>
+    </div>
+  </div>
+  <div class="slider-wrap">
+    <div class="s-track"></div><div class="s-fill" id="sfill"></div>
+    <input type="range" id="rs" min="0" value="0"><input type="range" id="re" value="1">
+  </div>
+</div>
+
+<main>
+  <div class="pane on" id="p-sleep"></div>
+  <div class="pane"    id="p-bp"></div>
+  <div class="pane"    id="p-hr"></div>
+  <div class="pane"    id="p-walk"></div>
+  <div class="pane"    id="p-vitals"></div>
+</main>
+
+<script>
+/* ===========================================================================
+   3. DATA LOADING AND DECRYPTION
+   ===========================================================================
+   health.json is encrypted. There is no passcode written into this file for
+   the app to compare against — instead, the passphrase you type is what
+   actually decrypts the data. Enter the wrong one and there is simply nothing
+   to show: the numbers cannot be recovered without it.
+
+   That is the point of the design. The site is public, but the file it serves
+   is meaningless noise to anyone who doesn't have your passphrase.
+
+   The steps below mirror build.py exactly, in reverse.
+   ------------------------------------------------------------------------ */
+
+/* Turn the base64 text stored in the file back into raw bytes. */
+function b64ToBytes(b64){
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for(let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/* Stretch the passphrase into a 256-bit key, using the salt and iteration
+   count that build.py recorded in the file. This is deliberately slow — that
+   slowness is exactly what makes guessing passphrases impractical. */
+async function deriveKey(passphrase, salt, iterations){
+  const base = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {name:'PBKDF2', salt, iterations, hash:'SHA-256'},
+    base,
+    {name:'AES-GCM', length:256},
+    false,
+    ['decrypt']);
+}
+
+/* Decrypt the envelope. This throws if the passphrase is wrong: AES-GCM carries
+   its own integrity tag, so a bad key fails outright rather than quietly
+   producing garbage. */
+async function decryptPayload(env, passphrase){
+  const key = await deriveKey(passphrase, b64ToBytes(env.salt), env.iterations);
+  const plain = await crypto.subtle.decrypt(
+    {name:'AES-GCM', iv: b64ToBytes(env.nonce)}, key, b64ToBytes(env.data));
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+
+let ENVELOPE = null;      // the encrypted file, held until a passphrase arrives
+let DAYS = [];   // one entry per day, oldest first
+let BP   = [];   // individual blood pressure readings
+let S = 0, E = 0;         // the selected range, as positions in DAYS
+const CHARTS = {};        // every Chart.js object, keyed by canvas id
+const BUILT = {};         // which tabs have had their charts created yet
+
+/* Fetch the data file. cache:'no-cache' asks the browser to check with the
+   server rather than silently reusing an old copy — important, because the
+   whole point of this app is that new data shows up after you publish. */
+async function load(){
+  const res = await fetch('health.json', {cache:'no-cache'});
+  if(!res.ok) throw new Error('health.json could not be loaded');
+  ENVELOPE = await res.json();
+  if(!ENVELOPE.encrypted)
+    throw new Error('health.json is not encrypted — rebuild it with build.py');
+}
+
+/* Called once the passphrase has successfully decrypted the file. */
+function startApp(p){
+  DAYS = p.days;
+  BP   = p.bp || [];
+  S = 0; E = DAYS.length - 1;
+  document.getElementById('mDays').textContent = DAYS.length;
+  document.getElementById('mGen').textContent  = 'built ' + p.generated;
+  buildAllCards();
+  setupSliders();
+  showPane('sleep');
+}
+
+/* The days currently inside the slider range. Every chart reads from this. */
+function view(){ return DAYS.slice(S, E + 1); }
+
+/* A moving average smooths out night-to-night noise so the trend is visible.
+   `win` is how many days to average over — 14 is a fortnight, which evens out
+   weekday/weekend differences.
+
+   Days with no reading are skipped rather than counted as zero, which would
+   otherwise drag the line down every time a gap appeared. */
+function movingAvg(rows, key, win){
+  const out = [];
+  for(let i = 0; i < rows.length; i++){
+    let sum = 0, n = 0;
+    for(let j = Math.max(0, i - win + 1); j <= i; j++){
+      const v = rows[j][key];
+      if(v !== undefined && v !== null){ sum += v; n++; }
+    }
+    out.push(n ? +(sum / n).toFixed(3) : null);
+  }
+  return out;
+}
+
+/* Pull one metric out of the day rows. Missing days become null, which tells
+   Chart.js to leave a gap rather than draw a misleading straight line. */
+function col(rows, key, mul){
+  return rows.map(r => {
+    const v = r[key];
+    return (v === undefined || v === null) ? null : (mul ? +(v * mul).toFixed(2) : v);
+  });
+}
+
+/* Stage percentages are worked out against total sleep, not time in bed.
+   Time in bed is missing or incomplete on a fair number of nights; total sleep
+   is recorded reliably every night, so percentages stay comparable throughout. */
+function pctOfSleep(rows, key){
+  return rows.map(r => {
+    const stage = r[key], total = r.asleep;
+    return (stage === undefined || !total) ? null : +(stage / total * 100).toFixed(1);
+  });
+}
+
+/* ===========================================================================
+   4. CHART DEFINITIONS
+   ===========================================================================
+   Rather than write out each chart by hand, every chart is described here as
+   a short entry and the code further down turns it into a real chart. Adding
+   a new chart means adding one entry to this list.
+
+     id    : unique name, also used for the canvas element
+     tab   : which tab it belongs to
+     title / sub : the heading and the small grey line under it
+     kind  : 'barline'  daily bars with a smoothed trend line over the top
+             'lines'    two or more plain lines
+             'stacked'  bars stacked to 100%
+             'band'     a shaded high-to-low range with an average line
+     unit  : appended to axis labels and tooltips
+   ------------------------------------------------------------------------ */
+const SPECS = [
+  /* ---- SLEEP ---- */
+  { id:'sl_pct', tab:'sleep', kind:'lines', unit:'%',
+    title:'Sleep stages, 14-day average',
+    sub:'each stage as a share of total sleep — smoothed over a fortnight',
+    series:[
+      {label:'Deep', color:'deep', pct:'deep', ma:14},
+      {label:'Core', color:'core', pct:'core', ma:14},
+      {label:'REM',  color:'rem',  pct:'rem',  ma:14},
+    ]},
+
+  { id:'sl_total', tab:'sleep', kind:'barline', unit:'h',
+    title:'Total sleep', sub:'hours asleep each night, with a 14-day average',
+    bar:{key:'asleep', color:'total', label:'Nightly'},
+    line:{key:'asleep', ma:14, color:'total', label:'14-day average'} },
+
+  { id:'sl_stack', tab:'sleep', kind:'stacked', unit:'%',
+    title:'Stage composition', sub:'how each night divided between the three stages',
+    series:[
+      {label:'Deep', color:'deep', pct:'deep'},
+      {label:'Core', color:'core', pct:'core'},
+      {label:'REM',  color:'rem',  pct:'rem'},
+    ]},
+
+  { id:'sl_deep', tab:'sleep', kind:'barline', unit:'h',
+    title:'Deep sleep', sub:'the restorative stage — hours per night',
+    bar:{key:'deep', color:'deep', label:'Nightly'},
+    line:{key:'deep', ma:14, color:'deep', label:'14-day average'} },
+
+  { id:'sl_rem', tab:'sleep', kind:'barline', unit:'h',
+    title:'REM sleep', sub:'the dreaming stage — hours per night',
+    bar:{key:'rem', color:'rem', label:'Nightly'},
+    line:{key:'rem', ma:14, color:'rem', label:'14-day average'} },
+
+  { id:'sl_core', tab:'sleep', kind:'barline', unit:'h',
+    title:'Core sleep', sub:'the bulk of the night — hours per night',
+    bar:{key:'core', color:'core', label:'Nightly'},
+    line:{key:'core', ma:14, color:'core', label:'14-day average'} },
+
+  { id:'sl_awake', tab:'sleep', kind:'barline', unit:'h',
+    title:'Time awake', sub:'time spent awake after first falling asleep',
+    bar:{key:'awake', color:'awake', label:'Nightly'},
+    line:{key:'awake', ma:14, color:'awake', label:'14-day average'} },
+
+  { id:'sl_bed', tab:'sleep', kind:'barline', unit:'h',
+    title:'Time in bed', sub:'gaps are nights where this figure was not recorded properly',
+    bar:{key:'bed', color:'total', label:'Nightly'},
+    line:{key:'bed', ma:14, color:'total', label:'14-day average'} },
+
+  /* ---- HEART RATE ---- */
+  { id:'hr_range', tab:'hr', kind:'band', unit:' bpm',
+    title:'Daily heart rate range', sub:'the shaded area runs from the day’s lowest to its highest reading',
+    lo:'hrLo', hi:'hrHi', avg:'hr', color:'hr' },
+
+  { id:'hr_rest', tab:'hr', kind:'barline', unit:' bpm',
+    title:'Resting heart rate', sub:'measured while still — generally, lower means fitter',
+    bar:{key:'rhr', color:'rhr', label:'Daily'},
+    line:{key:'rhr', ma:14, color:'rhr', label:'14-day average'} },
+
+  { id:'hr_walk', tab:'hr', kind:'barline', unit:' bpm',
+    title:'Walking heart rate', sub:'your average rate while walking',
+    bar:{key:'whr', color:'whr', label:'Daily'},
+    line:{key:'whr', ma:14, color:'whr', label:'14-day average'} },
+
+  /* ---- WALKING ---- */
+  { id:'w_spd', tab:'walk', kind:'barline', unit:' mph',
+    title:'Walking speed', sub:'average pace on foot',
+    bar:{key:'spd', color:'walk', label:'Daily'},
+    line:{key:'spd', ma:14, color:'walk', label:'14-day average'} },
+
+  { id:'w_len', tab:'walk', kind:'barline', unit:' in',
+    title:'Step length', sub:'average distance covered per step',
+    bar:{key:'steplen', color:'walk', label:'Daily'},
+    line:{key:'steplen', ma:14, color:'walk', label:'14-day average'} },
+
+  { id:'w_dbl', tab:'walk', kind:'barline', unit:'%',
+    title:'Double support', sub:'share of each stride with both feet down — lower is steadier',
+    bar:{key:'dbl', color:'walk', label:'Daily', mul:100},
+    line:{key:'dbl', ma:14, color:'walk', label:'14-day average', mul:100} },
+
+  { id:'w_asym', tab:'walk', kind:'barline', unit:'%',
+    title:'Walking asymmetry', sub:'difference between left and right steps — lower is more even',
+    bar:{key:'asym', color:'walk', label:'Daily', mul:100},
+    line:{key:'asym', ma:14, color:'walk', label:'14-day average', mul:100} },
+
+  /* Apple stores steadiness as a fraction (0.95), so multiply by 100 to show it
+     as the percentage it's labelled as. Same applies to blood oxygen below. */
+  { id:'w_stdy', tab:'walk', kind:'barline', unit:'%',
+    title:'Walking steadiness', sub:'Apple’s overall stability score — recorded occasionally',
+    bar:{key:'stdy', color:'walk', label:'Reading', mul:100},
+    line:{key:'stdy', ma:14, color:'walk', label:'Trend', mul:100} },
+
+  /* ---- VITALS ---- */
+  { id:'v_resp', tab:'vitals', kind:'barline', unit:' br/min',
+    title:'Respiratory rate', sub:'breaths per minute, measured mostly during sleep',
+    bar:{key:'resp', color:'vital', label:'Daily'},
+    line:{key:'resp', ma:14, color:'vital', label:'14-day average'} },
+
+  { id:'v_o2', tab:'vitals', kind:'barline', unit:'%',
+    title:'Blood oxygen', sub:'oxygen saturation — recorded on a small number of days',
+    bar:{key:'o2', color:'vital', label:'Reading', mul:100},
+    line:{key:'o2', ma:7, color:'vital', label:'Trend', mul:100} },
+
+  { id:'v_vo2', tab:'vitals', kind:'barline', unit:'',
+    title:'VO₂ max', sub:'an estimate of cardio fitness — higher is better',
+    bar:{key:'vo2', color:'vital', label:'Reading'},
+    line:{key:'vo2', ma:14, color:'vital', label:'Trend'} },
+
+  { id:'v_temp', tab:'vitals', kind:'barline', unit:'°F',
+    title:'Wrist temperature', sub:'overnight skin temperature — recorded on a small number of nights',
+    bar:{key:'temp', color:'vital', label:'Reading'},
+    line:{key:'temp', ma:7, color:'vital', label:'Trend'} },
+];
+
+/* ===========================================================================
+   5. CHART DRAWING
+   ======================================================================== */
+Chart.defaults.color = '#6b7a96';
+Chart.defaults.borderColor = '#252d3e';
+Chart.defaults.font.family = "-apple-system,system-ui,sans-serif";
+Chart.defaults.font.size = 10;
+Chart.defaults.animation = false;   // instant redraws when the slider moves
+
+/* Look up a colour variable by its short name, e.g. 'deep' -> '#e88c5a'. */
+const CV = n => getComputedStyle(document.documentElement).getPropertyValue('--' + n).trim();
+
+/* Shared chart settings. Kept in one place so every chart behaves the same. */
+function baseOpts(unit, stacked){
+  return {
+    responsive:true, maintainAspectRatio:false,
+    interaction:{mode:'index', intersect:false},
+    plugins:{
+      legend:{display:false},   // custom legends are drawn above each chart
+      tooltip:{
+        backgroundColor:'#0f1420', borderColor:'#252d3e', borderWidth:1, padding:9,
+        titleFont:{size:11, weight:'600'}, bodyFont:{size:10.5}, displayColors:true, boxWidth:8,
+        callbacks:{ label:c => {
+          if(c.parsed.y === null) return null;
+          return ' ' + c.dataset.label + ': ' + c.parsed.y + unit;
+        }}
+      }
+    },
+    scales:{
+      x:{ stacked:!!stacked,
+          ticks:{maxTicksLimit:6, maxRotation:0, autoSkip:true, font:{size:9}},
+          grid:{display:false} },
+      y:{ stacked:!!stacked,
+          max: stacked ? 100 : undefined,
+          ticks:{maxTicksLimit:5, callback:v => v + unit, font:{size:9}},
+          grid:{color:'rgba(37,45,62,.55)'} }
+    }
+  };
+}
+
+/* Turn one entry from SPECS into a real chart. */
+function makeChart(spec, rows){
+  const el = document.getElementById(spec.id);
+  if(!el) return;
+  const labels = rows.map(r => r.d);
+  let cfg;
+
+  if(spec.kind === 'lines'){
+    cfg = { type:'line', data:{ labels, datasets: spec.series.map(s => ({
+        label:s.label, borderColor:CV(s.color), borderWidth:2, pointRadius:0,
+        tension:.35, spanGaps:true,
+        data: s.ma ? movingAvg(rows.map((r,i)=>({v:pctOfSleep(rows,s.pct)[i]})), 'v', s.ma)
+                   : pctOfSleep(rows, s.pct)
+      })) }, options: baseOpts(spec.unit) };
+  }
+
+  else if(spec.kind === 'stacked'){
+    cfg = { type:'bar', data:{ labels, datasets: spec.series.map(s => ({
+        label:s.label, backgroundColor:CV(s.color) + 'cc', borderWidth:0,
+        data: pctOfSleep(rows, s.pct)
+      })) }, options: baseOpts(spec.unit, true) };
+  }
+
+  else if(spec.kind === 'band'){
+    /* Three datasets: an invisible line at the low value, a filled line at the
+       high value that shades DOWN to the low one, and the average on top. */
+    const c = CV(spec.color);
+    cfg = { type:'line', data:{ labels, datasets:[
+        {label:'Lowest', data:col(rows, spec.lo), borderColor:'transparent',
+         pointRadius:0, tension:.3, spanGaps:true},
+        {label:'Highest', data:col(rows, spec.hi), borderColor:c + '55', borderWidth:1,
+         backgroundColor:c + '1f', fill:'-1', pointRadius:0, tension:.3, spanGaps:true},
+        {label:'Average', data:col(rows, spec.avg), borderColor:c, borderWidth:2,
+         pointRadius:0, tension:.3, spanGaps:true},
+      ]}, options: baseOpts(spec.unit) };
+  }
+
+  else { /* 'barline' — the most common shape */
+    const c = CV(spec.bar.color);
+    const barData = col(rows, spec.bar.key, spec.bar.mul);
+    /* Build the average from the already-scaled values so percentage charts
+       don't end up with a line in different units from their bars. */
+    const scaled = rows.map((r,i) => ({v: barData[i]}));
+    cfg = { type:'bar', data:{ labels, datasets:[
+        {type:'bar', label:spec.bar.label, data:barData,
+         backgroundColor:c + '3d', borderColor:c + '70', borderWidth:1,
+         borderRadius:2, order:2},
+        {type:'line', label:spec.line.label, data: movingAvg(scaled, 'v', spec.line.ma),
+         borderColor:c, borderWidth:2.4, pointRadius:0, tension:.35, spanGaps:true, order:1},
+      ]}, options: baseOpts(spec.unit) };
+  }
+
+  CHARTS[spec.id] = new Chart(el, cfg);
+}
+
+/* Write the HTML for one chart card. Charts themselves are created later, only
+   when their tab is first opened — creating twenty at once makes a phone
+   stutter for a second or two. */
+function cardHTML(spec){
+  const legend = (() => {
+    if(spec.kind === 'lines' || spec.kind === 'stacked')
+      return spec.series.map(s => `<div class="lg"><i style="background:${CV(s.color)}"></i>${s.label}</div>`).join('');
+    if(spec.kind === 'band'){
+      const c = CV(spec.color);
+      return `<div class="lg"><i style="background:${c}"></i>Average</div>
+              <div class="lg"><i style="background:${c};opacity:.28"></i>Low to high</div>`;
+    }
+    const c = CV(spec.bar.color);
+    return `<div class="lg"><i style="background:${c};opacity:.45"></i>${spec.bar.label}</div>
+            <div class="lg"><i style="background:${c}"></i>${spec.line.label}</div>`;
+  })();
+
+  return `<div class="card">
+    <div class="chead" onclick="toggleCard(this)">
+      <div><div class="ctitle">${spec.title}</div><div class="csub">${spec.sub}</div></div>
+      <button class="ctog">−</button>
+    </div>
+    <div class="cbody">
+      <div class="legend">${legend}</div>
+      <div class="chart-box"><canvas id="${spec.id}"></canvas></div>
+    </div>
+  </div>`;
+}
+
+/* Lay out every tab's cards. Runs once, at startup. */
+function buildAllCards(){
+  ['sleep','hr','walk','vitals'].forEach(tab => {
+    document.getElementById('p-' + tab).innerHTML =
+      SPECS.filter(s => s.tab === tab).map(cardHTML).join('');
+  });
+  buildBPPane();
+}
+
+/* ---- Blood pressure tab ---------------------------------------------------
+   Built separately because it isn't a series of daily charts — it's a set of
+   summary figures plus individual readings. */
+
+/* The American Heart Association's categories. First match wins, so the order
+   matters: the most serious category is checked first. */
+const BP_CATS = [
+  {name:'Crisis',        test:(s,d)=> s>180 || d>120, color:'#d94f6a'},
+  {name:'Stage 2',       test:(s,d)=> s>=140 || d>=90, color:'#f2748c'},
+  {name:'Stage 1',       test:(s,d)=> s>=130 || d>=80, color:'#f0b45e'},
+  {name:'Elevated',      test:(s,d)=> s>=120,          color:'#e0d06a'},
+  {name:'Normal',        test:()=> true,               color:'#5ecfb1'},
+];
+const bpCat = r => BP_CATS.find(c => c.test(r.s, r.dia));
+
+function buildBPPane(){
+  document.getElementById('p-bp').innerHTML = `
+    <div class="kpis wide" id="bpKpis"></div>
+    <div class="card wide">
+      <div class="chead" onclick="toggleCard(this)">
+        <div><div class="ctitle">Systolic & diastolic over time</div>
+        <div class="csub">shaded bands mark the AHA categories for systolic pressure</div></div>
+        <button class="ctog">−</button>
+      </div>
+      <div class="cbody">
+        <div class="legend">
+          <div class="lg"><i style="background:${CV('sys')}"></i>Systolic (upper)</div>
+          <div class="lg"><i style="background:${CV('dia')}"></i>Diastolic (lower)</div>
+        </div>
+        <div class="chart-box"><canvas id="bp_trend"></canvas></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="chead" onclick="toggleCard(this)">
+        <div><div class="ctitle">Readings by category</div>
+        <div class="csub">how your readings distribute across the AHA bands</div></div>
+        <button class="ctog">−</button>
+      </div>
+      <div class="cbody"><div class="legend" id="bpDoughLg"></div>
+      <div class="chart-box" style="height:210px"><canvas id="bp_dough"></canvas></div></div>
+    </div>
+    <div class="card">
+      <div class="chead" onclick="toggleCard(this)">
+        <div><div class="ctitle">All readings</div>
+        <div class="csub">newest first</div></div>
+        <button class="ctog">−</button>
+      </div>
+      <div class="cbody"><div class="tblwrap" id="bpTable"></div></div>
+    </div>`;
+}
+
+/* Only the readings inside the currently selected date range. */
+function bpView(){
+  if(!DAYS.length) return [];
+  const from = DAYS[S].d, to = DAYS[E].d;
+  return BP.filter(r => r.d >= from && r.d <= to);
+}
+
+function renderBP(){
+  const rows = bpView();
+  const kpis = document.getElementById('bpKpis');
+
+  if(!rows.length){
+    kpis.innerHTML = `<div class="kpi wide"><div class="empty">No blood pressure readings in this date range. Widen the slider above.</div></div>`;
+    ['bp_trend','bp_dough'].forEach(id => { if(CHARTS[id]){ CHARTS[id].destroy(); delete CHARTS[id]; }});
+    document.getElementById('bpTable').innerHTML = '';
+    return;
+  }
+
+  const latest = rows[rows.length - 1];
+  const lc = bpCat(latest);
+  const avgS = Math.round(rows.reduce((a,r)=>a+r.s,0) / rows.length);
+  const avgD = Math.round(rows.reduce((a,r)=>a+r.dia,0) / rows.length);
+  const normal = rows.filter(r => bpCat(r).name === 'Normal').length;
+  const pctNormal = Math.round(normal / rows.length * 100);
+  const tone = n => n === 'Normal' ? 'ok' : (n === 'Elevated' || n === 'Stage 1') ? 'warn' : 'bad';
+
+  kpis.innerHTML = `
+    <div class="kpi"><div class="k">Latest</div>
+      <div class="v ${tone(lc.name)}">${latest.s}/${latest.dia}</div>
+      <div class="s">${latest.d} · ${lc.name}</div></div>
+    <div class="kpi"><div class="k">Average</div>
+      <div class="v">${avgS}/${avgD}</div>
+      <div class="s">across ${rows.length} readings</div></div>
+    <div class="kpi"><div class="k">In normal range</div>
+      <div class="v ${pctNormal >= 60 ? 'ok' : pctNormal >= 30 ? 'warn' : 'bad'}">${pctNormal}%</div>
+      <div class="s">${normal} of ${rows.length}</div></div>
+    <div class="kpi"><div class="k">Readings</div>
+      <div class="v">${rows.length}</div>
+      <div class="s">${rows[0].d} onward</div></div>`;
+
+  /* --- Trend chart, with the AHA bands painted behind it ------------------
+     This little plugin draws the coloured background stripes before the data
+     is drawn on top. */
+  const bands = {
+    id:'ahaBands',
+    beforeDatasetsDraw(chart){
+      const {ctx, chartArea:a, scales:{y}} = chart;
+      const stripes = [
+        {from:0,   to:120, c:'rgba(94,207,177,.07)'},
+        {from:120, to:130, c:'rgba(224,208,106,.07)'},
+        {from:130, to:140, c:'rgba(240,180,94,.08)'},
+        {from:140, to:400, c:'rgba(242,116,140,.08)'},
+      ];
+      ctx.save();
+      stripes.forEach(s => {
+        const yTop = y.getPixelForValue(s.to), yBot = y.getPixelForValue(s.from);
+        const top = Math.max(yTop, a.top), bot = Math.min(yBot, a.bottom);
+        if(bot > top){ ctx.fillStyle = s.c; ctx.fillRect(a.left, top, a.right - a.left, bot - top); }
+      });
+      ctx.restore();
+    }
+  };
+
+  if(CHARTS.bp_trend) CHARTS.bp_trend.destroy();
+  CHARTS.bp_trend = new Chart(document.getElementById('bp_trend'), {
+    type:'line',
+    data:{ labels: rows.map(r => r.d), datasets:[
+      {label:'Systolic',  data: rows.map(r => r.s),   borderColor:CV('sys'),
+       backgroundColor:CV('sys'), borderWidth:2, pointRadius:2.5, tension:.25},
+      {label:'Diastolic', data: rows.map(r => r.dia), borderColor:CV('dia'),
+       backgroundColor:CV('dia'), borderWidth:2, pointRadius:2.5, tension:.25},
+    ]},
+    options:{...baseOpts(' mmHg'), scales:{
+      x:{ticks:{maxTicksLimit:6, maxRotation:0, font:{size:9}}, grid:{display:false}},
+      y:{ticks:{maxTicksLimit:6, font:{size:9}}, grid:{color:'rgba(37,45,62,.55)'},
+         suggestedMin:60, suggestedMax:160}
+    }},
+    plugins:[bands]
+  });
+
+  /* --- Category doughnut --- */
+  const counts = BP_CATS.map(c => ({c, n: rows.filter(r => bpCat(r).name === c.name).length}))
+                        .filter(x => x.n > 0);
+  document.getElementById('bpDoughLg').innerHTML =
+    counts.map(x => `<div class="lg"><i style="background:${x.c.color}"></i>${x.c.name} (${x.n})</div>`).join('');
+
+  if(CHARTS.bp_dough) CHARTS.bp_dough.destroy();
+  CHARTS.bp_dough = new Chart(document.getElementById('bp_dough'), {
+    type:'doughnut',
+    data:{ labels: counts.map(x => x.c.name),
+           datasets:[{data: counts.map(x => x.n),
+                      backgroundColor: counts.map(x => x.c.color),
+                      borderColor:'#181e2c', borderWidth:2}] },
+    options:{responsive:true, maintainAspectRatio:false, cutout:'62%',
+      plugins:{legend:{display:false}, tooltip:{
+        backgroundColor:'#0f1420', borderColor:'#252d3e', borderWidth:1, padding:9,
+        callbacks:{label: c => ` ${c.label}: ${c.parsed} (${Math.round(c.parsed/rows.length*100)}%)`}
+      }}}
+  });
+
+  /* --- Table, newest first --- */
+  document.getElementById('bpTable').innerHTML =
+    '<table><thead><tr><th>Date</th><th>Systolic</th><th>Diastolic</th><th>Category</th></tr></thead><tbody>' +
+    rows.slice().reverse().map(r => {
+      const c = bpCat(r);
+      return `<tr><td>${r.d}</td><td>${r.s}</td><td>${r.dia}</td>
+        <td><span class="pill" style="background:${c.color}22;color:${c.color}">${c.name}</span></td></tr>`;
+    }).join('') + '</tbody></table>';
+}
+
+/* ===========================================================================
+   6. CONTROLS
+   ======================================================================== */
+
+/* Collapse or expand a card. Charts are resized afterwards so they redraw at
+   the right size rather than staying squashed. */
+function toggleCard(head){
+  const body = head.nextElementSibling;
+  const btn  = head.querySelector('.ctog');
+  body.classList.toggle('shut');
+  btn.textContent = body.classList.contains('shut') ? '+' : '−';
+  if(!body.classList.contains('shut')){
+    setTimeout(() => Object.values(CHARTS).forEach(c => c.resize()), 30);
+  }
+}
+
+/* Switch tabs. The first time a tab is opened its charts get created; after
+   that they're just updated. This keeps the app quick to start. */
+function showPane(tab){
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.p === tab));
+  document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'p-' + tab));
+
+  if(tab === 'bp'){ renderBP(); }
+  else if(!BUILT[tab]){
+    SPECS.filter(s => s.tab === tab).forEach(s => makeChart(s, view()));
+    BUILT[tab] = true;
+  } else {
+    SPECS.filter(s => s.tab === tab).forEach(s => refreshChart(s, view()));
+  }
+  window.scrollTo({top:0});
+}
+
+document.getElementById('tabs').addEventListener('click', e => {
+  const b = e.target.closest('.tab');
+  if(b) showPane(b.dataset.p);
+});
+
+/* Push new numbers into a chart that already exists. Cheaper than rebuilding. */
+function refreshChart(spec, rows){
+  const ch = CHARTS[spec.id];
+  if(!ch) return;
+  ch.data.labels = rows.map(r => r.d);
+
+  if(spec.kind === 'lines'){
+    spec.series.forEach((s,i) => {
+      const p = pctOfSleep(rows, s.pct);
+      ch.data.datasets[i].data = s.ma ? movingAvg(p.map(v=>({v})), 'v', s.ma) : p;
+    });
+  } else if(spec.kind === 'stacked'){
+    spec.series.forEach((s,i) => { ch.data.datasets[i].data = pctOfSleep(rows, s.pct); });
+  } else if(spec.kind === 'band'){
+    ch.data.datasets[0].data = col(rows, spec.lo);
+    ch.data.datasets[1].data = col(rows, spec.hi);
+    ch.data.datasets[2].data = col(rows, spec.avg);
+  } else {
+    const barData = col(rows, spec.bar.key, spec.bar.mul);
+    ch.data.datasets[0].data = barData;
+    ch.data.datasets[1].data = movingAvg(barData.map(v=>({v})), 'v', spec.line.ma);
+  }
+  ch.update('none');
+}
+
+/* Redraw whatever tab is currently visible. Called when the slider moves. */
+function refreshVisible(){
+  const tab = document.querySelector('.tab.on').dataset.p;
+  if(tab === 'bp') renderBP();
+  else SPECS.filter(s => s.tab === tab).forEach(s => refreshChart(s, view()));
+}
+
+/* --- The two-handled date slider ---------------------------------------- */
+function setupSliders(){
+  const rs = document.getElementById('rs'), re = document.getElementById('re');
+  rs.max = re.max = DAYS.length - 1;
+  rs.value = 0; re.value = DAYS.length - 1;
+
+  function sync(){
+    let a = +rs.value, b = +re.value;
+    /* Keep at least a week between the handles, otherwise the charts collapse
+       to a single point and stop being readable. */
+    if(b - a < 7){
+      if(document.activeElement === rs) a = Math.max(0, b - 7);
+      else b = Math.min(DAYS.length - 1, a + 7);
+      rs.value = a; re.value = b;
+    }
+    S = a; E = b;
+
+    const span = DAYS.length - 1 || 1;
+    document.getElementById('sfill').style.left  = (a / span * 100) + '%';
+    document.getElementById('sfill').style.width = ((b - a) / span * 100) + '%';
+    document.getElementById('lblS').textContent = DAYS[a].d;
+    document.getElementById('lblE').textContent = DAYS[b].d;
+    refreshVisible();
+  }
+
+  rs.addEventListener('input', sync);
+  re.addEventListener('input', sync);
+
+  document.querySelectorAll('.qbtn').forEach(btn => btn.addEventListener('click', () => {
+    document.querySelectorAll('.qbtn').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    const days = +btn.dataset.d;
+    re.value = DAYS.length - 1;
+    rs.value = days === 0 ? 0 : Math.max(0, DAYS.length - 1 - days);
+    sync();
+  }));
+
+  sync();
+}
+
+/* --- The passphrase gate -------------------------------------------------
+   Unlike the old version, this doesn't compare your input against anything.
+   It tries to decrypt the data with it. Success means the passphrase was
+   right, by definition.
+
+   "Remember on this device" stores the passphrase in this browser so you're
+   not retyping it every time you glance at the app. That's a real trade:
+   anyone who can already unlock your phone could dig it out. Leave it
+   unticked on a shared or work device.
+   ------------------------------------------------------------------------ */
+const REMEMBER_KEY = 'health-passphrase';
+
+async function attempt(passphrase, remember){
+  const err = document.getElementById('pinerr');
+  const btn = document.getElementById('pinbtn');
+  const input = document.getElementById('pin');
+
+  err.textContent = '';
+  btn.disabled = true;
+  btn.textContent = 'Decrypting…';   // the key stretching takes a moment
+  await new Promise(r => setTimeout(r, 10));   // let the button repaint first
+
+  try{
+    const data = await decryptPayload(ENVELOPE, passphrase);
+    if(remember){ try{ localStorage.setItem(REMEMBER_KEY, passphrase); }catch(e){} }
+    document.getElementById('gate').classList.add('hidden');
+    startApp(data);
+    /* Charts created while the page was hidden come out zero-sized. */
+    setTimeout(() => Object.values(CHARTS).forEach(c => c.resize()), 60);
+    return true;
+  }catch(e){
+    /* A wrong passphrase and a corrupted file are indistinguishable here —
+       both mean AES-GCM's integrity check failed. */
+    try{ localStorage.removeItem(REMEMBER_KEY); }catch(e2){}
+    err.textContent = 'That passphrase didn’t work.';
+    input.value = '';
+    input.focus();
+    btn.disabled = false;
+    btn.textContent = 'Open';
+    return false;
+  }
+}
+
+function submitPin(){
+  const v = document.getElementById('pin').value;
+  if(!v) return;
+  attempt(v, document.getElementById('remember').checked);
+}
+
+document.getElementById('pinbtn').addEventListener('click', submitPin);
+document.getElementById('pin').addEventListener('keydown', e => {
+  if(e.key === 'Enter') submitPin();
+});
+
+/* --- Start up ------------------------------------------------------------ */
+load()
+  .then(async () => {
+    let saved = null;
+    try{ saved = localStorage.getItem(REMEMBER_KEY); }catch(e){}
+    /* If a passphrase was remembered, try it silently. It can fail legitimately
+       — say you changed the passphrase on the next build — in which case the
+       gate simply stays up and asks. */
+    if(saved && await attempt(saved, true)) return;
+    document.getElementById('pin').focus();
+  })
+  .catch(err => {
+    document.getElementById('gate').innerHTML =
+      `<h1>Couldn't load your data</h1>
+       <p>health.json is missing or unreadable.<br><br>
+       If you're opening this file straight from Finder, that's the cause —
+       browsers block local file loading for security. Publish to GitHub Pages
+       and open the web address instead.</p>
+       <p style="opacity:.55;font-size:11px">${err.message}</p>`;
+  });
+
+/* Register the service worker — the part that lets the app be installed to a
+   home screen and opened without a connection. Only works over https, so it
+   quietly does nothing when testing locally. */
+if('serviceWorker' in navigator){
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(()=>{}));
+}
+</script>
+</body>
+</html>

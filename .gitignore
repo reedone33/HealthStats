@@ -1,0 +1,18 @@
+# Files that stay on your Mac and never go up to GitHub.
+
+# The raw Apple Health export. It's 15 MB, and git keeps a complete copy of
+# every version forever — twenty updates would bloat the repository to a few
+# hundred megabytes for no benefit. The app doesn't read this file anyway; it
+# reads health.json, which build.py generates from it.
+#
+# Keep the CSV here as your archive. Just don't publish it.
+Healthstats.csv
+*.csv
+
+# Your encryption passphrase, if you chose to save it rather than type it on
+# every update. This must NEVER reach GitHub — it's the one thing standing
+# between a passer-by and your health data.
+.passphrase
+
+# macOS clutter
+.DS_Store
