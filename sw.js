@@ -25,7 +25,7 @@
    update.command does this for you automatically.
    ========================================================================== */
 
-const CACHE_VERSION = 'health-20260809-1413';
+const CACHE_VERSION = 'health-20260809-1429';
 const SHELL_CACHE = CACHE_VERSION + '-shell';
 const DATA_CACHE  = CACHE_VERSION + '-data';
 
@@ -98,7 +98,31 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // EVERYTHING ELSE (the app itself) — saved copy first, network as backup.
+  // THE PAGE ITSELF — network first, saved copy as fallback.
+  //
+  // This started out cache-first, which caused a nasty failure: publishing a
+  // new index.html alongside a new health.json meant the browser could pair
+  // the OLD page with the NEW data. The old code didn't understand the new
+  // file and fell over with a confusing error.
+  //
+  // Fetching the page from the network first keeps the two in step. The page
+  // is only about 40 KB, so the cost is negligible, and the saved copy still
+  // covers you when there's no connection.
+  if(req.mode === 'navigate' || url.pathname.endsWith('.html') || url.pathname.endsWith('/')){
+    event.respondWith(
+      fetch(req)
+        .then(res => {
+          const copy = res.clone();
+          caches.open(SHELL_CACHE).then(c => c.put(req, copy));
+          return res;
+        })
+        .catch(() => caches.match(req).then(hit => hit || caches.match('./index.html')))
+    );
+    return;
+  }
+
+  // EVERYTHING ELSE (icons, manifest) — saved copy first, network as backup.
+  // These genuinely don't change between updates.
   event.respondWith(
     caches.match(req).then(hit => hit || fetch(req).catch(() => caches.match('./index.html')))
   );
