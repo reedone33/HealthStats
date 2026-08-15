@@ -202,6 +202,24 @@ td{padding:7px 10px;text-align:right;border-bottom:1px solid rgba(37,45,62,.45);
 td:first-child{text-align:left;color:var(--muted);}
 .pill{display:inline-block;padding:1px 7px;border-radius:20px;font-size:10px;font-weight:600;}
 
+/* --- Blood pressure category explanations --------------------------------
+   Any element carrying data-cat becomes tappable (phone) or hoverable (Mac)
+   and shows a small bubble describing that AHA category. A dotted underline
+   hints that there is something to tap. */
+.catq{cursor:help;border-bottom:1px dotted currentColor;}
+
+/* The bubble itself. Only one exists on the page; it is moved next to
+   whichever term was tapped, rather than one bubble per pill. */
+#catpop{
+  position:absolute; z-index:60; max-width:250px; display:none;
+  background:var(--card); border:1px solid var(--bdr); border-radius:11px;
+  padding:10px 12px; box-shadow:0 8px 26px rgba(0,0,0,.45);
+  font-size:11.5px; line-height:1.45; color:var(--text);
+}
+#catpop.on{display:block;}
+#catpop .cpname{font-weight:700; font-size:12.5px; margin-bottom:3px;}
+#catpop .cprange{color:var(--muted); font-size:10.5px; margin-bottom:6px;}
+
 /* On a wider screen (iPad, Mac) spread the cards into two columns and give
    the charts more height, rather than leaving a long thin column. */
 @media (min-width:760px){
@@ -664,12 +682,87 @@ function buildAllCards(){
 /* The American Heart Association's categories. First match wins, so the order
    matters: the most serious category is checked first. */
 const BP_CATS = [
-  {name:'Crisis',        test:(s,d)=> s>180 || d>120, color:'#d94f6a'},
-  {name:'Stage 2',       test:(s,d)=> s>=140 || d>=90, color:'#f2748c'},
-  {name:'Stage 1',       test:(s,d)=> s>=130 || d>=80, color:'#f0b45e'},
-  {name:'Elevated',      test:(s,d)=> s>=120,          color:'#e0d06a'},
-  {name:'Normal',        test:()=> true,               color:'#5ecfb1'},
+  {name:'Crisis',        test:(s,d)=> s>180 || d>120, color:'#d94f6a',
+   range:'over 180 or over 120',
+   note:'A hypertensive crisis. If a repeat reading five minutes later is still this high, it is treated as needing medical attention straight away.'},
+  {name:'Stage 2',       test:(s,d)=> s>=140 || d>=90, color:'#f2748c',
+   range:'140+ or 90+',
+   note:'Stage 2 high blood pressure. Usually managed with medication alongside lifestyle changes.'},
+  {name:'Stage 1',       test:(s,d)=> s>=130 || d>=80, color:'#f0b45e',
+   range:'130-139 or 80-89',
+   note:'Stage 1 high blood pressure. Whether it is treated with medication depends on your wider heart risk, not this number alone.'},
+  {name:'Elevated',      test:(s,d)=> s>=120,          color:'#e0d06a',
+   range:'120-129 and under 80',
+   note:'Not high blood pressure yet, but likely to become so without a change in habits.'},
+  {name:'Normal',        test:()=> true,               color:'#5ecfb1',
+   range:'under 120 and under 80',
+   note:'A healthy reading. Nothing to act on.'},
 ];
+
+/* A reading is classified by whichever number is WORSE, which is why the list
+   above is checked most-serious-first — 125/95 is Stage 2 on its diastolic
+   even though its systolic alone would read as Elevated. */
+const catByName = n => BP_CATS.find(c => c.name === n);
+
+/* --- The popover ----------------------------------------------------------
+   One bubble, reused. Clicking anything with data-cat opens it; clicking
+   anywhere else, pressing Escape, or scrolling closes it. Using click rather
+   than :hover is what makes this work on a phone, where there is no hover. */
+function catPop(){
+  let el = document.getElementById('catpop');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'catpop';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+function hideCatPop(){ catPop().classList.remove('on'); }
+
+function showCatPop(target){
+  const c = catByName(target.dataset.cat);
+  if(!c) return;
+  const el = catPop();
+  el.innerHTML = `<div class="cpname" style="color:${c.color}">${c.name}</div>
+    <div class="cprange">Systolic ${c.range.split(' and ')[0].split(' or ')[0]} mmHg &middot; ${c.range}</div>
+    <div>${c.note}</div>`;
+  el.classList.add('on');
+
+  /* Position it just under the term, nudged back on screen if it would
+     otherwise run off the right edge on a narrow phone. */
+  const r = target.getBoundingClientRect();
+  const w = el.offsetWidth;
+  let left = r.left + window.scrollX;
+  const maxLeft = window.scrollX + document.documentElement.clientWidth - w - 10;
+  if(left > maxLeft) left = maxLeft;
+  if(left < window.scrollX + 10) left = window.scrollX + 10;
+  el.style.left = left + 'px';
+  el.style.top  = (r.bottom + window.scrollY + 7) + 'px';
+}
+
+/* Listeners are attached once, to the document, so they keep working even
+   though the pills are rebuilt every time the date range changes. */
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-cat]');
+  if(t){ e.stopPropagation(); showCatPop(t); }
+  else { hideCatPop(); }
+});
+document.addEventListener('keydown', e => { if(e.key === 'Escape') hideCatPop(); });
+window.addEventListener('scroll', hideCatPop, {passive:true});
+
+/* On a Mac, hovering is quicker than clicking, so do that too. */
+document.addEventListener('mouseover', e => {
+  const t = e.target.closest('[data-cat]');
+  if(t) showCatPop(t);
+});
+document.addEventListener('mouseout', e => {
+  if(e.target.closest('[data-cat]')) hideCatPop();
+});
+
+/* Wraps a category name in the tappable, underlined markup. */
+const catTerm = (name, extra='') =>
+  `<span class="catq" data-cat="${name}"${extra}>${name}</span>`;
 const bpCat = r => BP_CATS.find(c => c.test(r.s, r.dia));
 
 function buildBPPane(){
@@ -692,7 +785,7 @@ function buildBPPane(){
     <div class="card">
       <div class="chead" onclick="toggleCard(this)">
         <div><div class="ctitle">Readings by category</div>
-        <div class="csub">how your readings distribute across the AHA bands</div></div>
+        <div class="csub">how your readings distribute across the AHA bands &mdash; tap a category name to see what it means</div></div>
         <button class="ctog">−</button>
       </div>
       <div class="cbody"><div class="legend" id="bpDoughLg"></div>
@@ -737,7 +830,7 @@ function renderBP(){
   kpis.innerHTML = `
     <div class="kpi"><div class="k">Latest</div>
       <div class="v ${tone(lc.name)}">${latest.s}/${latest.dia}</div>
-      <div class="s">${latest.d} · ${lc.name}</div></div>
+      <div class="s">${latest.d} · ${catTerm(lc.name)}</div></div>
     <div class="kpi"><div class="k">Average</div>
       <div class="v">${avgS}/${avgD}</div>
       <div class="s">across ${rows.length} readings</div></div>
@@ -792,7 +885,7 @@ function renderBP(){
   const counts = BP_CATS.map(c => ({c, n: rows.filter(r => bpCat(r).name === c.name).length}))
                         .filter(x => x.n > 0);
   document.getElementById('bpDoughLg').innerHTML =
-    counts.map(x => `<div class="lg"><i style="background:${x.c.color}"></i>${x.c.name} (${x.n})</div>`).join('');
+    counts.map(x => `<div class="lg"><i style="background:${x.c.color}"></i>${catTerm(x.c.name)} (${x.n})</div>`).join('');
 
   if(CHARTS.bp_dough) CHARTS.bp_dough.destroy();
   CHARTS.bp_dough = new Chart(document.getElementById('bp_dough'), {
@@ -814,7 +907,7 @@ function renderBP(){
     rows.slice().reverse().map(r => {
       const c = bpCat(r);
       return `<tr><td>${r.d}</td><td>${r.s}</td><td>${r.dia}</td>
-        <td><span class="pill" style="background:${c.color}22;color:${c.color}">${c.name}</span></td></tr>`;
+        <td><span class="pill catq" data-cat="${c.name}" style="background:${c.color}22;color:${c.color}">${c.name}</span></td></tr>`;
     }).join('') + '</tbody></table>';
 }
 
