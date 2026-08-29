@@ -193,9 +193,20 @@ words would not.
 **"Remember on this device" stores the passphrase in that browser.** Convenient,
 and reasonable on your own phone. Untick it on anything shared.
 
-**Your earlier unencrypted data is still in the repository's history.** Every
-version you commit is kept by git forever, and the first few commits contained
-`health.json` in plain text on a public repository. Encrypting from now on
-doesn't retroactively hide those. If that matters to you, the fix is to wipe the
-history and start fresh — ask Claude to do it, or make the repository private
-(which needs GitHub Pro for Pages to keep working).
+**Git keeps every version you commit, forever.** That matters here because the
+repository is public, so anything ever committed stays fetchable even after you
+change it. Checked on 29 August 2026: every `health.json` in the history is
+encrypted, including the first commit, and `Healthstats.csv` has never been
+committed — `.gitignore` keeps it out. So there is nothing exposed. Just keep it
+that way: never commit the CSV, and never commit a `.passphrase` file.
+
+**The repository is public, and should stay that way.** Two reasons. On the free
+plan GitHub Pages only publishes from a public repository, so making it private
+would take the app offline — iPhone included. And going private would not add
+the protection it sounds like it would: even on the paid tiers that allow Pages
+from a private repository, **the published site itself is still public**. Only
+GitHub Enterprise Cloud can put access control in front of a Pages site.
+
+What actually protects the data is the encryption above, not the repository
+setting — and that is the stronger of the two, because it holds regardless of
+who can reach the URL.
