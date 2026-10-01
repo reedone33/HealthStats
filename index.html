@@ -893,7 +893,7 @@ function buildBPPane(){
     <div class="card wide">
       <div class="chead" onclick="toggleCard(this)">
         <div><div class="ctitle">Systolic & diastolic over time</div>
-        <div class="csub">shaded bands mark the AHA categories for systolic pressure</div></div>
+        <div class="csub">bold lines are a 14-day average &mdash; they break where too few readings were taken to average honestly. Shaded bands mark the AHA categories for systolic pressure.</div></div>
         <div class="cbtns">
           <button class="cfs" title="Full screen" aria-label="Full screen">&#9974;</button>
           <button class="ctog">−</button>
@@ -901,8 +901,10 @@ function buildBPPane(){
       </div>
       <div class="cbody">
         <div class="legend">
-          <div class="lg"><i style="background:${CV('sys')}"></i>Systolic (upper)</div>
-          <div class="lg"><i style="background:${CV('dia')}"></i>Diastolic (lower)</div>
+          <div class="lg"><i style="background:${CV('sys')};opacity:.4"></i>Systolic readings</div>
+          <div class="lg"><i style="background:${CV('sys')}"></i>Systolic 14-day avg</div>
+          <div class="lg"><i style="background:${CV('dia')};opacity:.4"></i>Diastolic readings</div>
+          <div class="lg"><i style="background:${CV('dia')}"></i>Diastolic 14-day avg</div>
         </div>
         <div class="chart-box"><canvas id="bp_trend"></canvas></div>
       </div>
@@ -966,6 +968,53 @@ function buildBPPane(){
         </div>
       </div>
     </div>`;
+}
+
+/* --- 14-day moving average over irregularly spaced readings ---------------
+   For each reading, average every reading whose date falls inside the trailing
+   WINDOW_DAYS calendar days (inclusive of the reading's own day).
+
+   Readings come in date order, so a two-pointer walk is enough: `lo` only ever
+   moves forward. That keeps this linear rather than re-scanning the whole list
+   for every point, which matters because the array is rebuilt every time the
+   date slider moves.
+
+   Returns null where too few readings fall in the window, so the line breaks
+   over a sparse stretch rather than implying a trend that isn't measured. */
+const BP_MA_DAYS = 14;   // the window, in calendar days
+const BP_MA_MIN  = 3;    // fewest readings that may produce a value
+
+function bpMovingAvg(rows, key){
+  const len = rows.length;
+  /* Dates as numbers once, up front - parsing inside the loop would mean
+     thousands of Date objects for no benefit. */
+  const t = rows.map(r => new Date(r.d + 'T00:00:00').getTime());
+  const span = (BP_MA_DAYS - 1) * 86400000;
+
+  /* Running totals, so the sum of any window is a single subtraction. */
+  const pre = new Array(len + 1).fill(0);
+  for(let i = 0; i < len; i++) pre[i + 1] = pre[i] + rows[i][key];
+
+  const out = [];
+  let lo = 0, hi = 0;
+
+  for(let i = 0; i < len; i++){
+    /* Back edge: drop readings that have aged out of the window. */
+    while(t[lo] < t[i] - span) lo++;
+
+    /* Front edge: take every reading dated on or before this one. That
+       deliberately includes the OTHER readings from the same day, which sit
+       further along the array - within-day order is arbitrary, so a day's
+       average must not depend on it. */
+    if(hi < i) hi = i;
+    while(hi + 1 < len && t[hi + 1] <= t[i]) hi++;
+
+    const n = hi - lo + 1;
+    out.push(n >= BP_MA_MIN
+      ? Math.round((pre[hi + 1] - pre[lo]) / n * 10) / 10
+      : null);
+  }
+  return out;
 }
 
 /* Only the readings inside the currently selected date range. */
@@ -1035,11 +1084,22 @@ function renderBP(){
   if(CHARTS.bp_trend) CHARTS.bp_trend.destroy();
   CHARTS.bp_trend = new Chart(document.getElementById('bp_trend'), {
     type:'line',
+    /* Raw readings sit underneath at reduced weight; the moving averages are
+       the bold lines on top. With 200+ noisy points, four lines at equal
+       weight is unreadable - the trend has to win the eye. `order` controls
+       the draw order: higher numbers are drawn first, so end up behind. */
     data:{ labels: rows.map(r => r.d), datasets:[
-      {label:'Systolic',  data: rows.map(r => r.s),   borderColor:CV('sys'),
-       backgroundColor:CV('sys'), borderWidth:2, pointRadius:2.5, tension:.25},
-      {label:'Diastolic', data: rows.map(r => r.dia), borderColor:CV('dia'),
-       backgroundColor:CV('dia'), borderWidth:2, pointRadius:2.5, tension:.25},
+      {label:'Systolic',  data: rows.map(r => r.s),   borderColor:CV('sys') + '55',
+       backgroundColor:CV('sys') + '55', borderWidth:1, pointRadius:1.5, tension:.25, order:3},
+      {label:'Diastolic', data: rows.map(r => r.dia), borderColor:CV('dia') + '55',
+       backgroundColor:CV('dia') + '55', borderWidth:1, pointRadius:1.5, tension:.25, order:3},
+
+      {label:'Systolic 14-day avg',  data: bpMovingAvg(rows, 's'),
+       borderColor:CV('sys'), borderWidth:2.6, pointRadius:0, tension:.35,
+       spanGaps:false, order:1},
+      {label:'Diastolic 14-day avg', data: bpMovingAvg(rows, 'dia'),
+       borderColor:CV('dia'), borderWidth:2.6, pointRadius:0, tension:.35,
+       spanGaps:false, order:1},
     ]},
     options:{...baseOpts(' mmHg'), scales:{
       x:{ticks:{maxTicksLimit:6, maxRotation:0, font:{size:9}}, grid:{display:false}},

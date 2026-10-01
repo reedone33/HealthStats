@@ -25,7 +25,7 @@
    update.command does this for you automatically.
    ========================================================================== */
 
-const CACHE_VERSION = 'health-20260929-0807';
+const CACHE_VERSION = 'health-20261001-0924';
 const SHELL_CACHE = CACHE_VERSION + '-shell';
 const DATA_CACHE  = CACHE_VERSION + '-data';
 
