@@ -248,6 +248,19 @@ td:first-child{text-align:left;color:var(--muted);}
 #fsov .rangebar{position:static;top:auto;border-radius:11px;border:1px solid var(--bdr);
   margin-bottom:8px;flex:0 0 auto;}
 
+/* A table expanded to full screen drops its 340px cap and takes the height
+   that is going spare, the same way a chart does. min-height:0 is what lets a
+   flex child actually shrink its scroll box rather than overflowing the panel. */
+#fshost .tblwrap{max-height:none !important;flex:1 1 auto;min-height:0;}
+
+/* With 200+ rows on screen the column headings have to stay put, or you lose
+   track of which number is which halfway down. */
+#fshost .tblwrap thead th{
+  position:sticky;top:0;z-index:1;
+  background:var(--card);
+  box-shadow:0 1px 0 var(--bdr);
+}
+
 /* Stop the page behind from scrolling while the overlay is open. */
 body.fslock{overflow:hidden;}
 
@@ -925,7 +938,10 @@ function buildBPPane(){
       <div class="chead" onclick="toggleCard(this)">
         <div><div class="ctitle">All readings</div>
         <div class="csub">newest first</div></div>
-        <button class="ctog">−</button>
+        <div class="cbtns">
+          <button class="cfs" title="Full screen" aria-label="Full screen">&#9974;</button>
+          <button class="ctog">−</button>
+        </div>
       </div>
       <div class="cbody"><div class="tblwrap" id="bpTable"></div></div>
     </div>
